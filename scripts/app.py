@@ -22,6 +22,7 @@ from landmarkdiff.landmarks import (
 )
 from landmarkdiff.manipulation import apply_procedure_preset
 from landmarkdiff.masking import generate_surgical_mask
+from landmarkdiff.surgery3d import SUPPORTED_3D_PROCEDURES, apply_surgery_landmarks
 from landmarkdiff.synthetic.tps_warp import warp_image_tps
 
 
@@ -551,8 +552,9 @@ def build_app():
                 "Upload photos from multiple angles for more accurate 3D-aware prediction.\n"
                 "Follow the guide: **front -> left 45 -> right 45"
                 " -> left profile -> right profile**.\n\n"
-                "The system validates each angle using landmark-based pose estimation "
-                "and combines all views for the final result."
+                "Choose **Shared 3D** to fit one patient-specific canonical mesh, apply a "
+                "single surgical deformation, and reproject it to every view — instead of "
+                "running an independent 2D preset per photo."
             )
 
             with gr.Row():
@@ -580,6 +582,17 @@ def build_app():
                         ],
                         value="rhinoplasty",
                         label="Procedure",
+                    )
+                    ma_mode = gr.Radio(
+                        choices=["Independent 2D", "Shared 3D"],
+                        value="Shared 3D",
+                        label="Surgery mode",
+                        info=(
+                            "Independent 2D: each view gets its own 2D preset. "
+                            "Shared 3D: one canonical mesh deformation, reprojected "
+                            "to every view (supports: "
+                            f"{', '.join(sorted(SUPPORTED_3D_PROCEDURES))})."
+                        ),
                     )
                     ma_intensity = gr.Slider(
                         minimum=0,
@@ -670,7 +683,14 @@ def build_app():
                 return "\n".join(lines)
 
             def generate_multi_angle(
-                front, left45, right45, left_prof, right_prof, procedure, intensity
+                front,
+                left45,
+                right45,
+                left_prof,
+                right_prof,
+                procedure,
+                intensity,
+                mode_label,
             ):
                 """Generate surgical outcome prediction for each uploaded angle."""
                 images = [
@@ -680,32 +700,69 @@ def build_app():
                     (left_prof, "Left Profile"),
                     (right_prof, "Right Profile"),
                 ]
-                results = []
-                gallery_items = []
+                mode = (
+                    "shared_3d"
+                    if str(mode_label).lower().startswith("shared")
+                    else "independent_2d"
+                )
 
+                if (
+                    mode == "shared_3d"
+                    and str(procedure).lower().strip() not in SUPPORTED_3D_PROCEDURES
+                ):
+                    raise gr.Error(
+                        "Shared 3D currently supports: "
+                        + ", ".join(sorted(SUPPORTED_3D_PROCEDURES))
+                        + ". Switch to Independent 2D for this procedure."
+                    )
+
+                # Extract landmarks for all uploaded views first so Shared 3D
+                # can fit one canonical mesh across them.
+                prepared: list[tuple[np.ndarray | None, object | None, str]] = []
+                face_list = []
                 for img_rgb, label in images:
                     if img_rgb is None:
-                        results.append(None)
+                        prepared.append((None, None, label))
                         continue
                     image_bgr = img_rgb[:, :, ::-1].copy()
                     image_bgr = cv2.resize(image_bgr, (512, 512))
                     face = extract_landmarks(image_bgr)
+                    prepared.append((image_bgr, face, label))
+                    if face is not None:
+                        face_list.append(face)
+
+                manip_by_slot: dict[int, object] = {}
+                if face_list:
+                    manipulated = apply_surgery_landmarks(
+                        face_list,
+                        procedure,
+                        float(intensity),
+                        mode=mode,
+                    )
+                    manip_iter = iter(manipulated)
+                    for prep_i, (_img, face, _label) in enumerate(prepared):
+                        if face is not None:
+                            manip_by_slot[prep_i] = next(manip_iter)
+
+                results = []
+                gallery_items = []
+                for prep_i, (image_bgr, face, label) in enumerate(prepared):
+                    if image_bgr is None:
+                        results.append(None)
+                        continue
                     if face is None:
                         results.append(bgr_to_rgb(image_bgr))
                         continue
 
-                    manip = apply_procedure_preset(
-                        face, procedure, float(intensity), image_size=512
-                    )
+                    manip = manip_by_slot[prep_i]
                     mask = generate_surgical_mask(face, procedure, 512, 512)
                     warped = warp_image_tps(image_bgr, face.pixel_coords, manip.pixel_coords)
                     comp = mask_composite(warped, image_bgr, mask)
                     result_rgb = bgr_to_rgb(comp)
                     results.append(result_rgb)
                     gallery_items.append((bgr_to_rgb(image_bgr), f"{label} (Before)"))
-                    gallery_items.append((result_rgb, f"{label} (After)"))
+                    gallery_items.append((result_rgb, f"{label} ({mode})"))
 
-                # Pad results to 5 entries
                 while len(results) < 5:
                     results.append(None)
 
@@ -720,7 +777,7 @@ def build_app():
             )
             ma_generate_btn.click(
                 fn=generate_multi_angle,
-                inputs=ma_angle_inputs + [ma_procedure, ma_intensity],
+                inputs=ma_angle_inputs + [ma_procedure, ma_intensity, ma_mode],
                 outputs=[
                     ma_out_front,
                     ma_out_left45,
