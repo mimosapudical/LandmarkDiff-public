@@ -163,6 +163,33 @@ For FLAME-scale meshes the system is solved matrix-free with preconditioned
 conjugate gradient rather than constructing and factorizing a dense 5K-by-5K
 matrix.
 
+## Validation results
+
+Using the dependency-free canonical backend, held-out-view validation was run
+across 27 combinations of:
+
+- procedures: mentoplasty, genioplasty, rhinoplasty;
+- intensities: 40, 60, 100;
+- held-out yaw: 20°, 45°, 85°.
+
+With the sweep-selected regularization `lambda_smooth=30` and
+`lambda_locality=0.3`:
+
+- Shared 3D wins 24 / 27 held-out cases;
+- mean relative held-out NME change is -20.1%;
+- genioplasty wins 9 / 9 cases, mean -47.2%;
+- mentoplasty wins 9 / 9 cases, mean -12.0%;
+- rhinoplasty wins 6 / 9 cases, mean -1.1%;
+- maximum synthetic camera-rotation error is about 0.0001°.
+
+The three losses are all rhinoplasty at 20° yaw, where Shared 3D is about 23%
+worse than the independent 2D preset. The same rhinoplasty deformation improves
+at 45° and 85° yaw. This is treated as a method limitation rather than hidden by
+procedure-specific tuning.
+
+A focused 70° / 80° held-out matrix gives 6 / 6 wins with about 23.7% mean
+relative NME improvement.
+
 ## Current limitations
 
 - The real FLAME path requires an externally supplied MediaPipe-to-FLAME
